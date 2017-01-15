@@ -9,7 +9,10 @@ def read(filename):
 setup(
     name="wile",
     use_scm_version=True,
-    setup_requires=['setuptools_scm'],
+    setup_requires=[
+        'setuptools_scm',
+        'nose >= 1.0',
+    ],
     author="Leo Antunes",
     author_email="leo@costela.net",
     description=("A stripped down Let's Encrypt (ACME) client"),
@@ -25,6 +28,11 @@ setup(
         'cryptography',
         'setuptools_scm',  # for run-time version-detect
     ],
+    tests_require=[
+        'mock',
+        'nose >= 1.0',
+    ],
+    test_suite='nose.',
     entry_points={
         'console_scripts': [
             'wile = wile:main',
