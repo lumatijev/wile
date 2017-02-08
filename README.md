@@ -29,6 +29,11 @@ Note that you can also pass multiple domains with a single document root, which 
 $ wile cert request example.com:/var/www/example.com/ www.example.com
 ```
 
+Storing webroot validation on remote host using SSH (port is optional, defaults to 22):
+```
+$ wile cert request user@host@port:example.com:/var/www/example.com/
+```
+
 You can also increase the default minimal validity time to one week, if you intend on running wile via a weekly cronjob:
 ```
 $ wile cert request --min-valid-time 1w example.com:/var/www/example.com/
