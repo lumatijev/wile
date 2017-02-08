@@ -2,9 +2,13 @@
 import os
 import logging
 import errno
+from getpass import getpass
 from datetime import datetime
 from six import b
 from six.moves import range
+from pexpect import EOF as ExceptionPexpectEOF
+from pexpect.pxssh import pxssh
+from pexpect.pxssh import ExceptionPxssh
 
 import click
 from OpenSSL import crypto
@@ -35,12 +39,12 @@ def cert():
 @click.option('--key-digest', metavar='DIGEST', default='sha256', show_default=True, help='The digest to use when signing the request with its key (must be supported by openssl)')
 @click.option('--min-valid-time', type=argtypes.TimespanType, metavar='TIMESPAN', default='1d', show_default=True, help='If a certificate is found and its expiration lies inside of this timespan, it will be automatically requested and overwritten; otherwise no request will be made. The format for this option is "1d" for one day. Supported units are hours, days and weeks.')
 @click.option('--force', is_flag=True, default=False, show_default=True, help='Whether to force a request to be made, even if a valid certificate is found')
-@click.argument('domainroots', 'DOMAIN[:WEBROOT]', type=argtypes.DomainWebrootType, metavar='DOMAIN[:WEBROOT]', nargs=-1, required=True)
+@click.argument('domainroots', '[USER@HOST[@PORT]:]DOMAIN[:WEBROOT]', type=argtypes.RemoteDomainWebrootType, metavar='[USER@HOST[@PORT]:]DOMAIN[:WEBROOT]', nargs=-1, required=True)
 def request(ctx, domainroots, with_chain, key_size, output_dir, basename, key_digest, min_valid_time, force):
     regr = ctx.invoke(reg.register, quiet=True, auto_accept_tos=True)
     authzrs = list()
 
-    domain_list, webroot_list = _generate_domain_and_webroot_lists_from_args(ctx, domainroots)
+    remote_list, domain_list, webroot_list = _generate_remote_domain_and_webroot_lists_from_args(ctx, domainroots)
     basename = basename or domain_list[0]
     keyfile_path = os.path.join(output_dir, '%s.key' % basename)
     certfile_path = os.path.join(output_dir, '%s.crt' % basename)
@@ -56,15 +60,20 @@ def request(ctx, domainroots, with_chain, key_size, output_dir, basename, key_di
             logger.info('existing certificate (%s) will expire inside of renewal time (%s) or has changes; requesting new one' % (certfile_path, min_valid_time))
             force = True
 
-    for (domain, webroot) in zip(domain_list, webroot_list):
-        logger.info('requesting challange for %s in %s' % (domain, webroot))
+    for (remote, domain, webroot) in zip(remote_list, domain_list, webroot_list):
+        if not remote or remote.count(None) is len(remote):
+            logger.info('requesting challenge for %s in %s' % (domain, webroot))
+            remote = None
+        else:
+            logger.info('requesting challenge for %s in %s on %s' % (domain, webroot, remote[1]))
+            remote += (getpass('Password for %s@%s: ' % (remote[0], remote[1])),)
 
         authzr = ctx.obj['acme'].request_domain_challenges(domain, new_authzr_uri=regr.new_authzr_uri)
         authzrs.append(authzr)
 
         challb = _get_http_challenge(ctx, authzr)
         chall_response, chall_validation = challb.response_and_validation(ctx.obj['account_key'])
-        _store_webroot_validation(webroot, challb, chall_validation)
+        _store_webroot_validation(ctx, remote, webroot, challb, chall_validation)
         ctx.obj['acme'].answer_challenge(challb, chall_response)
 
     key, csr = _generate_key_and_csr(domain_list, key_size, key_digest)
@@ -122,7 +131,8 @@ def _confirm_overwrite(filepath):
     click.confirm('file %s exists; overwrite?' % filepath, abort=True)
 
 
-def _generate_domain_and_webroot_lists_from_args(ctx, domainroots):
+def _generate_remote_domain_and_webroot_lists_from_args(ctx, domainroots):
+    remote_list = list()
     domain_list = list()
     webroot_list = list()
     webroot = None
@@ -131,10 +141,11 @@ def _generate_domain_and_webroot_lists_from_args(ctx, domainroots):
         if not webroot:
             logger.error('domain without webroot: %s' % domainroot.domain)
             ctx.exit(1)
+        remote_list.append(domainroot.remote)
         domain_list.append(domainroot.domain)
         webroot_list.append(webroot)
 
-    return (domain_list, webroot_list)
+    return (remote_list, domain_list, webroot_list)
 
 
 def _get_http_challenge(ctx, authzr):
@@ -144,17 +155,32 @@ def _get_http_challenge(ctx, authzr):
     ctx.fail('no acceptable challenge type found; only HTTP01 supported')
 
 
-def _store_webroot_validation(webroot, challb, val):
+def _store_webroot_validation(ctx, remote, webroot, challb, val):
     logger.info('storing validation of %s' % webroot)
-    try:
-        os.makedirs(os.path.join(webroot, challb.URI_ROOT_PATH), 0o755)
-    except OSError as e:
-        if e.errno != errno.EEXIST:
-            raise
+    chall_path = os.path.join(webroot, challb.path.strip('/'))
+    if not remote:
+        try:
+            os.makedirs(os.path.join(webroot, challb.URI_ROOT_PATH), 0o755)
+        except OSError as e:
+            if e.errno != errno.EEXIST:
+                raise
 
-    with open(os.path.join(webroot, challb.path.strip('/')), 'wb') as outf:
-        logger.info('storing validation to %s' % outf.name)
-        outf.write(b(val))
+        with open(chall_path, 'wb') as outf:
+            logger.info('storing validation to %s' % outf.name)
+            outf.write(b(val))
+    else:
+        logger.info('storing validation to %s:%s' % (remote[1], chall_path))
+        ssh = pxssh()
+        ssh.force_password = True
+        ssh.SSH_OPTS = "-o 'NumberOfPasswordPrompts=1'"
+        user, host, port, password = remote
+        try:
+            if ssh.login(host, user, password, port=port):
+                ssh.sendline('echo "%s" > %s' % (b(val), chall_path))
+                ssh.logout()
+        except (ExceptionPexpectEOF, ExceptionPxssh) as e:
+            logger.error('invalid password for %s@%s' % (user, host))
+            ctx.exit(1)
 
 
 def _is_valid_and_unchanged(certfile_path, domains, min_valid_time):

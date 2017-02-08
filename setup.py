@@ -24,6 +24,7 @@ setup(
         'pyOpenSSL',
         'cryptography',
         'setuptools_scm',  # for run-time version-detect
+        'pexpect',
     ],
     entry_points={
         'console_scripts': [

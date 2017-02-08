@@ -5,25 +5,32 @@ from collections import namedtuple
 
 import click
 
-_DomainWebrootTuple = namedtuple('DomainWebrootTuple', ['domain', 'webroot'])
+_RemoteDomainWebrootTuple = namedtuple('RemoteDomainWebrootTuple', ['remote', 'domain', 'webroot'])
 
 
-class _DomainWebrootType(click.ParamType):
+class _RemoteDomainWebrootType(click.ParamType):
     domain = None
     webroot = None
 
     def convert(self, value, param, ctx):
-        if isinstance(value, _DomainWebrootTuple):
+        if isinstance(value, _RemoteDomainWebrootTuple):
             return value
         url = value.split(':')
-        if len(url) not in (1, 2):
-            self.fail('could not parse %s as DOMAIN[:WEBROOT]' % value)
-        domain = url[0]
-        webroot = len(url) > 1 and os.path.expanduser(url[1]) or None
-        return _DomainWebrootTuple(domain=domain, webroot=webroot)
+        if len(url) not in range(1, 5):
+            self.fail('could not parse %s as [USER@HOST[@PORT]:]DOMAIN[:WEBROOT]' % value)
+        user_host_port = len(url) is 3 and url[0].split('@') or None
+        if user_host_port and len(user_host_port) < 2:
+            self.fail('could not parse %s as [USER@HOST[@PORT]:]DOMAIN[:WEBROOT]' % value)
+        elif user_host_port:
+            remote = len(user_host_port) is 3 and tuple(user_host_port) or tuple(user_host_port,) + (None,)
+        else:
+            remote = None
+        domain = url[max(0, len(url) - 2)]
+        webroot = len(url) > 1 and os.path.expanduser(url[len(url) - 1]) or None
+        return _RemoteDomainWebrootTuple(remote=remote, domain=domain, webroot=webroot)
 
     def get_metavar(self, param):
-        return 'DOMAIN[:WEBROOT]'
+        return '[USER@HOST[@PORT]:]DOMAIN[:WEBROOT]'
 
 
 class _TimespanType(click.ParamType):
@@ -45,5 +52,5 @@ class _TimespanType(click.ParamType):
     def get_metavar(self, param):
         return 'TIME'
 
-DomainWebrootType = _DomainWebrootType()
+RemoteDomainWebrootType = _RemoteDomainWebrootType()
 TimespanType = _TimespanType()
